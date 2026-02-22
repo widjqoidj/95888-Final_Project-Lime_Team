@@ -1,4 +1,4 @@
-# Burgh Date Planner
+# Burgh Event Planner
 
 Team Name: Lime Team  
 Group Members (Andrew IDs):
