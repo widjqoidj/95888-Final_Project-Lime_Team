@@ -10,13 +10,13 @@ Group Members (Andrew IDs):
 Make event discovery in Pittsburgh faster by surfacing relevant suggestions based on budget and time of day.
 
 ## Overview
-`Burgh Date Planner` collects Pittsburgh event listings from multiple web sources, saves one cleaned CSV, and generates ranked event suggestions in a CLI.
+`Burgh Date Planner` collects Pittsburgh event listings from multiple web sources, saves a cleaned CSV output, and generates ranked event suggestions in a CLI.
 
 ## Current Workflow
 1. `data_collection.py` scrapes and cleans events from configured sources.
 2. Cleaned data is saved to `data/pittsburgh_events.csv`.
 3. `main.py` loads that CSV and validates a strict input schema.
-4. `recommend.py` filters and ranks events by budget and preferred period (`morning`, `afternoon`, `evening`).
+4. `recommend.py` filters and ranks events by budget, preferred period (`morning`, `afternoon`, `evening`), and optional event date.
 
 ## Data Sources
 - Eventbrite Pittsburgh (`https://www.eventbrite.com/d/pa--pittsburgh/all-events/`)
@@ -25,7 +25,7 @@ Make event discovery in Pittsburgh faster by surfacing relevant suggestions base
 Source configuration lives in `config.py`.
 
 ## CSV Schema
-`main.py` currently expects these columns in `data/pittsburgh_events.csv`:
+`data/pittsburgh_events.csv` currently contains:
 - `event_name`
 - `date`
 - `time`
@@ -33,8 +33,11 @@ Source configuration lives in `config.py`.
 - `price`
 - `source`
 - `url`
+- `max_price` (derived numeric upper-bound price when available)
 
 During loading, `event_name` is normalized to `name` for recommendation.
+
+In schema validation, `main.py` strictly requires the first seven columns above and allows extra columns (such as `max_price`).
 
 ## Tech Stack
 - Python 3.10+
@@ -66,7 +69,8 @@ python3 main.py
 
 The CLI prompts for:
 - max budget (USD)
-- preferred time of day (`morning`, `afternoon`, `evening`)
+- optional event date filter (`YYYY-MM-DD`)
+- preferred time of day (`morning`, `afternoon`, `evening`, `any`)
 - number of suggestions to generate
 
 ## Project Structure
@@ -88,12 +92,12 @@ The CLI prompts for:
 1. Input validation for required recommendation fields.
 2. Price parsing from text (for example, `Free`, `$15`, `$10-$20`).
 3. Datetime synthesis from `date` + `time`.
-4. Filtering by budget and preferred period.
+4. Filtering by budget, preferred period, and optional event date.
 5. Scoring with weighted budget/time scores and ranking.
 
 ## Notes
 - `main.py` uses a strict schema check; missing required CSV columns will raise an error.
-- If no suggestions match, try a different period or a higher budget.
+- If no suggestions match, try a different date, period, or a higher budget.
 
 ## Rubric Alignment Checklist
 - 2+ online data sources: yes (2 configured)

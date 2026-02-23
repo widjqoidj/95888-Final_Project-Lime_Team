@@ -1,6 +1,6 @@
 """
 Main menu-driven CLI for Burgh Event Planner.
-Recommendation logic focuses on event suggestions using price/time filtering.
+Recommendation logic focuses on event suggestions using price/time/date filtering.
 """
 
 from __future__ import annotations
@@ -64,6 +64,19 @@ def _ask_int(prompt: str, default: int) -> int:
         return default
 
 
+def _ask_optional_date(prompt: str) -> str | None:
+    raw = input(prompt).strip()
+    if not raw:
+        return None
+
+    parsed = pd.to_datetime(raw, errors="coerce")
+    if pd.isna(parsed):
+        print("Invalid date; skipping date filter.")
+        return None
+
+    return pd.Timestamp(parsed).strftime("%Y-%m-%d")
+
+
 def _ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
     missing_columns = [column for column in REQUIRED_INPUT_COLUMNS if column not in df.columns]
     if missing_columns:
@@ -81,7 +94,6 @@ def _ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
     normalized = normalized[normalized["name"] != ""]
     normalized = normalized.drop(columns=["event_name"])
 
-    # Keep one canonical row per source/name/date/time/location tuple.
     normalized = normalized.drop_duplicates(
         subset=["source", "name", "date", "time", "location"]
     ).reset_index(drop=True)
@@ -121,20 +133,24 @@ def _print_menu() -> None:
 def _collect_preferences() -> UserPreferences:
     print("\nPlease enter your preferences:")
     budget = _ask_float("Max event budget (USD)", 75.0)
+    event_date = _ask_optional_date(
+        "Please enter a date (YYYY-MM-DD, leave blank for any date): "
+    )
     period = input(
-        "Preferred time of day (morning, afternoon, evening) [evening]: "
+        "Preferred time of day (morning, afternoon, evening, any) [any]: "
     ).strip().lower()
-    # Invalid period entries fall back to evening for predictable behavior.
-    if period not in {"morning", "afternoon", "evening"}:
+    # Invalid period entries fall back to any for predictable behavior.
+    if period not in {"morning", "afternoon", "evening", "any"}:
         if period:
             print("Invalid period; using default.")
-        period = "evening"
+        period = "any"
     max_results = _ask_int("Number of suggestions to generate", 3)
 
     return UserPreferences(
         budget=max(0.0, budget),
         preferred_period=period,
         max_results=max(1, max_results),
+        event_date=event_date,
     )
 
 
@@ -171,7 +187,10 @@ def main() -> None:
             scored = score_candidates(df, prefs)
             generated_plans = build_event_suggestions(scored, prefs)
             if not generated_plans:
-                print("\nNo suggestions matched current constraints. Try a different period or higher budget.")
+                print(
+                    "\nNo suggestions matched current constraints. "
+                    "Try a different date, period, or higher budget."
+                )
                 continue
 
             print(f"\nGenerated {len(generated_plans)} suggestion(s).\n")

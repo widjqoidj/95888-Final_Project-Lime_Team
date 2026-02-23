@@ -1,6 +1,6 @@
 """
 Recommendation helpers for general event suggestions.
-Filter and rank events by time of day and price.
+Filter and rank events by time of day, date, and price.
 """
 
 from __future__ import annotations
@@ -15,20 +15,34 @@ import pandas as pd
 @dataclass
 class UserPreferences:
     budget: float
-    preferred_period: str = "evening"
+    preferred_period: str = "any"
     max_results: int = 5
     min_price: float = 0.0
+    event_date: str | None = None
 
 
 PERIODS = ("morning", "afternoon", "evening")
+VALID_PERIODS = PERIODS + ("any",)
 PERIOD_INDEX = {period: index for index, period in enumerate(PERIODS)}
 
 
-def _normalize_period(value: Any, default: str = "evening") -> str:
+def _normalize_period(value: Any, default: str = "any") -> str:
     text = str(value or "").strip().lower()
-    if text in PERIOD_INDEX:
+    if text in VALID_PERIODS:
         return text
     return default
+
+
+def _normalize_event_date(value: Any) -> pd.Timestamp | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    timestamp = pd.to_datetime(text, errors="coerce")
+    if pd.isna(timestamp):
+        return None
+
+    return pd.Timestamp(timestamp).normalize()
 
 
 def _hour_to_period(hour: int) -> str:
@@ -61,7 +75,7 @@ def _parse_price_text(value: Any) -> float:
 
 
 def _coerce_start_time(df: pd.DataFrame) -> pd.Series:
-    # Source data stores date and time separately, so synthesize a single timestamp.
+    # Source data stores date and time separately, here we synthesize a single timestamp.
     date_text = df["date"].fillna("").astype(str).str.strip()
     time_text = df["time"].fillna("").astype(str).str.strip()
 
@@ -130,12 +144,31 @@ def filter_by_time_period(
         return df.copy()
 
     target_period = _normalize_period(preferred_period)
+    if target_period == "any":
+        return df.copy().reset_index(drop=True)
+
     timestamps = pd.to_datetime(df["start_time"], errors="coerce")
     in_period = timestamps.apply(
         lambda ts: _hour_to_period(int(ts.hour)) == target_period if pd.notna(ts) else False
     )
 
     return df[in_period].copy().reset_index(drop=True)
+
+
+def filter_by_event_date(
+    df: pd.DataFrame,
+    event_date: Any = None,
+) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+
+    target_date = _normalize_event_date(event_date)
+    if target_date is None:
+        return df.copy()
+
+    timestamps = pd.to_datetime(df["start_time"], errors="coerce")
+    on_target_date = timestamps.dt.normalize() == target_date
+    return df[on_target_date].copy().reset_index(drop=True)
 
 
 def _budget_score(cost: float, budget: float) -> float:
@@ -154,11 +187,14 @@ def _budget_score(cost: float, budget: float) -> float:
 
 
 def _time_score(timestamp: Any, prefs: UserPreferences) -> float:
+    preferred_period = _normalize_period(prefs.preferred_period)
+    if preferred_period == "any":
+        return 1.0
+
     if pd.isna(timestamp):
         return 0.2
 
     event_period = _hour_to_period(int(pd.Timestamp(timestamp).hour))
-    preferred_period = _normalize_period(prefs.preferred_period)
     # Neighbor periods are partially acceptable; opposite period gets lowest score.
     distance = abs(PERIOD_INDEX[event_period] - PERIOD_INDEX[preferred_period])
 
@@ -173,7 +209,7 @@ def score_candidates(df: pd.DataFrame, prefs: UserPreferences) -> pd.DataFrame:
     """
     Key recommendation flow:
     1) normalize candidate fields
-    2) filter by price and preferred period of day
+    2) filter by price, preferred period of day, and optional date
     3) score remaining events
     """
     prepared = _prepare_candidates(df)
@@ -190,6 +226,10 @@ def score_candidates(df: pd.DataFrame, prefs: UserPreferences) -> pd.DataFrame:
     filtered = filter_by_time_period(
         filtered,
         preferred_period,
+    )
+    filtered = filter_by_event_date(
+        filtered,
+        prefs.event_date,
     )
 
     if filtered.empty:

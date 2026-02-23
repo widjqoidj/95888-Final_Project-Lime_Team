@@ -1,6 +1,6 @@
 """
 Central project configuration and filesystem paths.
-Single-output CSV setup.
+Scrape outputs and downstream recommendation paths.
 """
 
 from pathlib import Path
@@ -25,7 +25,7 @@ SCRAPED_EVENT_COLUMNS = [
 # Standardized schema for scraped event outputs.
 STANDARD_COLUMNS = SCRAPED_EVENT_COLUMNS
 
-# Final output CSV file location.
+# Final output file.
 SCRAPED_OUTPUT_FILES = {
     "final_csv": DATA_DIR / "pittsburgh_events.csv",
 }

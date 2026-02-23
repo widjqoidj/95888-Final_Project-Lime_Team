@@ -36,9 +36,7 @@ HEADERS = {
 MAX_PAGES = 3
 LISTING_SLEEP_SECONDS = 1.5
 DETAIL_SLEEP_SECONDS = 1.2
-
-PGH_EVENTS_SOURCE_KEY = "pgh_events"
-EVENTBRITE_SOURCE_KEY = "eventbrite"
+PGH_PRICE_FETCH_SLEEP_SECONDS = 0.8
 
 OUTPUT_FILE = Path(SCRAPED_OUTPUT_FILES["final_csv"])
 
@@ -59,10 +57,71 @@ def get_text(element: Any) -> str:
 
 
 def _eventbrite_listing_page_url(page_num: int) -> str:
-    base_url = str(DATA_SOURCES[EVENTBRITE_SOURCE_KEY]["url"])
+    base_url = str(DATA_SOURCES["eventbrite"]["url"])
     if page_num == 1:
         return base_url
     return f"{base_url}?page={page_num}"
+
+
+def scrape_pgh_event_price(
+    event_url: str,
+    request_timeout: int = SCRAPE_REQUEST_TIMEOUT_SECONDS,
+) -> str:
+    """
+    Fetch a pgh.events detail page and extract price text.
+    Handles "$39.17", "$35.00 to $41.23", and "Free".
+    """
+    if not event_url or event_url == "N/A":
+        return "N/A"
+
+    try:
+        response = requests.get(event_url, headers=HEADERS, timeout=request_timeout)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        print(f"      ✗ Price fetch failed: {exc}")
+        return "N/A"
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    full_text = soup.get_text(" ")
+
+    for selector in [
+        "[class*='price']",
+        "[class*='ticket']",
+        "[class*='cost']",
+        "[class*='admission']",
+    ]:
+        for element in soup.select(selector):
+            text = element.get_text(" ", strip=True)
+            if re.search(r"\$[\d,]+", text):
+                range_match = re.search(
+                    r"(\$[\d,]+(?:\.\d{1,2})?\s*(?:to|-|–)\s*\$[\d,]+(?:\.\d{1,2})?)",
+                    text,
+                    re.IGNORECASE,
+                )
+                if range_match:
+                    return range_match.group(1).strip()
+
+                single_match = re.search(r"\$[\d,]+(?:\.\d{1,2})?", text)
+                if single_match:
+                    return single_match.group(0)
+
+    range_match = re.search(
+        r"(\$[\d,]+(?:\.\d{1,2})?\s*(?:to|-|–)\s*\$[\d,]+(?:\.\d{1,2})?)",
+        full_text,
+        re.IGNORECASE,
+    )
+    if range_match:
+        return range_match.group(1).strip()
+
+    single_match = re.search(r"(\$[\d,]+(?:\.\d{1,2})?)", full_text)
+    if single_match:
+        return single_match.group(1)
+
+    free_match = re.search(r"\bfree\b", full_text, re.IGNORECASE)
+    if free_match:
+        return "Free"
+
+    return "N/A"
 
 
 def scrape_pgh_events(
@@ -128,8 +187,21 @@ def scrape_pgh_events(
                 price_el = card.select_one("[class*='price']") or card.select_one("[class*='cost']")
                 price = get_text(price_el)
                 if price == "N/A":
-                    matched = re.search(r"(Free|\$[\d,.]+)", card.get_text(), re.IGNORECASE)
+                    matched = re.search(
+                        r"(\$[\d,]+(?:\.\d{1,2})?\s*(?:to|-|–)\s*\$[\d,]+(?:\.\d{1,2})?"
+                        r"|\$[\d,]+(?:\.\d{1,2})?|Free)",
+                        card.get_text(),
+                        re.IGNORECASE,
+                    )
                     price = matched.group(0) if matched else "N/A"
+                if price == "N/A" and source_url != "N/A":
+                    print(f"    ↳ [{event_name[:40]}] fetching detail page for price...")
+                    price = scrape_pgh_event_price(
+                        source_url,
+                        request_timeout=request_timeout,
+                    )
+                    print(f"      → price found: {price}")
+                    time.sleep(PGH_PRICE_FETCH_SLEEP_SECONDS)
 
                 pgh_events.append(
                     {
@@ -312,6 +384,29 @@ def clean_location(location: Any) -> Any:
     return location.strip(" ,") if location else "N/A"
 
 
+def extract_max_price(price_str: Any) -> float | str:
+    """
+    Return max numeric amount from a price string.
+    Preserves "Free" and "N/A" markers.
+    """
+    if not isinstance(price_str, str):
+        return "N/A"
+
+    price = price_str.strip()
+    if price.lower() in ("n/a", "", "free"):
+        return price.capitalize() if price.lower() == "free" else "N/A"
+
+    amounts = re.findall(r"\$([\d,]+(?:\.\d{1,2})?)", price)
+    if amounts:
+        values = [float(amount.replace(",", "")) for amount in amounts]
+        return max(values)
+
+    number_match = re.search(r"([\d,]+(?:\.\d{1,2})?)", price)
+    if number_match:
+        return float(number_match.group(1).replace(",", ""))
+    return "N/A"
+
+
 def build_dataframe(all_events: list[dict[str, Any]]) -> pd.DataFrame:
     df = pd.DataFrame(all_events, columns=SCRAPED_EVENT_COLUMNS)
     if df.empty:
@@ -332,6 +427,7 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     cleaned["price"] = cleaned["price"].apply(
         lambda price: price.rstrip(".") if isinstance(price, str) else price
     )
+    cleaned["max_price"] = cleaned["price"].apply(extract_max_price)
     return cleaned
 
 
@@ -343,7 +439,10 @@ def save_csv(df: pd.DataFrame, path: Path | str) -> Path:
     print(f"✅  {len(df)} events saved to {path}")
     print(f"{'=' * 50}")
     if not df.empty:
-        print(df[["event_name", "date", "time", "location", "price", "source"]].to_string(index=False))
+        preview_columns = ["event_name", "date", "time", "location", "price", "source"]
+        if "max_price" in df.columns:
+            preview_columns.insert(5, "max_price")
+        print(df[preview_columns].to_string(index=False))
     return path
 
 
@@ -354,37 +453,6 @@ def load_csv(path: Path | str) -> pd.DataFrame:
 
 def _save_collection_output(cleaned_df: pd.DataFrame, final_output_file: Path) -> None:
     save_csv(cleaned_df, final_output_file)
-
-
-def _empty_raw_sources() -> dict[str, list[dict[str, Any]]]:
-    return {source_key: [] for source_key in DATA_SOURCES}
-
-
-def collect_raw_sources(
-    max_pages: int = MAX_PAGES,
-    request_timeout: int = SCRAPE_REQUEST_TIMEOUT_SECONDS,
-    save_outputs: bool = True,
-) -> tuple[dict[str, list[dict[str, Any]]], pd.DataFrame]:
-    """
-    Collect fresh source data and optionally persist the final CSV.
-    """
-    ensure_project_directories()
-
-    pgh_events = scrape_pgh_events(max_pages=max_pages, request_timeout=request_timeout)
-    eventbrite_events = scrape_eventbrite(max_pages=max_pages, request_timeout=request_timeout)
-    all_events = pgh_events + eventbrite_events
-
-    raw_sources = _empty_raw_sources()
-    raw_sources[PGH_EVENTS_SOURCE_KEY] = pgh_events
-    raw_sources[EVENTBRITE_SOURCE_KEY] = eventbrite_events
-
-    if not all_events:
-        return raw_sources, pd.DataFrame(columns=SCRAPED_EVENT_COLUMNS)
-
-    cleaned_df = clean_dataframe(build_dataframe(all_events))
-    if save_outputs:
-        _save_collection_output(cleaned_df, OUTPUT_FILE)
-    return raw_sources, cleaned_df
 
 
 def prompt_user(output_file: Path | str = OUTPUT_FILE) -> bool:
@@ -418,7 +486,13 @@ def main() -> None:
 
     if use_fresh:
         print("\n[Starting fresh scrape...]\n")
-        _raw_sources, cleaned_df = collect_raw_sources(save_outputs=False)
+        all_events = scrape_pgh_events() + scrape_eventbrite()
+        if not all_events:
+            print("No events collected.")
+            return
+
+        scraped_df = build_dataframe(all_events)
+        cleaned_df = clean_dataframe(scraped_df)
 
         if cleaned_df.empty:
             print("No events collected.")
@@ -429,7 +503,7 @@ def main() -> None:
         print(f"\n[Loading cached data...]\n")
         cached_df = load_csv(OUTPUT_FILE)
         cleaned_df = clean_dataframe(cached_df)
-        save_csv(cleaned_df, OUTPUT_FILE)
+        _save_collection_output(cleaned_df, OUTPUT_FILE)
 
 
 if __name__ == "__main__":
