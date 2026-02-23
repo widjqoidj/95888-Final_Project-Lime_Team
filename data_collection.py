@@ -49,6 +49,7 @@ MANUAL_LOCATION_FIXES = {
 
 
 def clean(text: str | None) -> str:
+    # Standardize missing/blank text to one marker so downstream cleaning is consistent.
     return " ".join(text.split()) if text else "N/A"
 
 
@@ -90,6 +91,7 @@ def scrape_pgh_event_price(
         "[class*='cost']",
         "[class*='admission']",
     ]:
+        # First try likely price containers before scanning the entire page text.
         for element in soup.select(selector):
             text = element.get_text(" ", strip=True)
             if re.search(r"\$[\d,]+", text):
@@ -149,6 +151,7 @@ def scrape_pgh_events(
 
         for day in day_blocks:
             day_time_el = day.select_one("time")
+            # Day blocks carry the calendar date; individual cards may only include time.
             day_date = day_time_el.get("datetime", "N/A")[:10] if day_time_el else "N/A"
 
             for card in day.select("[class*='event-module--event']"):
@@ -195,6 +198,7 @@ def scrape_pgh_events(
                     )
                     price = matched.group(0) if matched else "N/A"
                 if price == "N/A" and source_url != "N/A":
+                    # Fallback: open the event detail page when listing card omits price.
                     print(f"    ↳ [{event_name[:40]}] fetching detail page for price...")
                     price = scrape_pgh_event_price(
                         source_url,
@@ -320,6 +324,7 @@ def scrape_eventbrite(
         soup = BeautifulSoup(response.text, "html.parser")
         found: list[str] = []
         for anchor in soup.select("a[href*='/e/']"):
+            # Strip query params so tracking variants of the same event URL dedupe correctly.
             href = str(anchor.get("href", "")).split("?")[0]
             if href and href not in eb_urls and href not in found:
                 found.append(href)
@@ -371,6 +376,7 @@ def scrape_eventbrite(
 def clean_location(location: Any) -> Any:
     if not isinstance(location, str) or location == "N/A":
         return location
+    # Heuristic cleanup for scrape artifacts like embedded street numbers and city suffixes.
     if not re.match(r"^\d", location):
         location = re.sub(r"([a-zA-Z])(\d)", r"\1", location).strip()
     location = re.split(r"\s+\d{1,5}\s+", location)[0].strip()
@@ -413,6 +419,7 @@ def build_dataframe(all_events: list[dict[str, Any]]) -> pd.DataFrame:
         return df
     df = df[df["event_name"].str.strip().str.len() > 0]
     df = df[df["event_name"] != "N/A"]
+    # Same event often appears multiple times across paginated source listings.
     df.drop_duplicates(subset=["event_name", "date"], inplace=True)
     df.reset_index(drop=True, inplace=True)
     return df
@@ -427,6 +434,7 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     cleaned["price"] = cleaned["price"].apply(
         lambda price: price.rstrip(".") if isinstance(price, str) else price
     )
+    # Keep a numeric-ish ceiling for range values ("$10-$20" -> 20.0) for analysis/filtering.
     cleaned["max_price"] = cleaned["price"].apply(extract_max_price)
     return cleaned
 
