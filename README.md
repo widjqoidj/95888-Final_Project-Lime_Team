@@ -99,6 +99,15 @@ The CLI prompts for:
 - `main.py` uses a strict schema check; missing required CSV columns will raise an error.
 - If no suggestions match, try a different date, period, or a higher budget.
 
+## GenAI Use
+- Model: ChatGPT-5.3-Codex
+- Use case: 
+    - Help with integration of data collection script to overall project codebase
+    - Configration and utility file setup
+    - Improvement and validation checks of recommendation logic
+    - Writing README.md
+
+
 ## Rubric Alignment Checklist
 - 2+ online data sources: yes (2 configured)
 - at least 1 scraped source: yes (2 configured)

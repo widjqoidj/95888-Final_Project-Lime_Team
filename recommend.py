@@ -22,6 +22,7 @@ class UserPreferences:
 
 
 PERIODS = ("morning", "afternoon", "evening")
+# "any" is a bypass sentinel used by CLI and scoring to disable period filtering.
 VALID_PERIODS = PERIODS + ("any",)
 PERIOD_INDEX = {period: index for index, period in enumerate(PERIODS)}
 
@@ -38,6 +39,7 @@ def _normalize_event_date(value: Any) -> pd.Timestamp | None:
     if not text:
         return None
 
+    # Accept flexible input (e.g. "2026-02-23", "Feb 23 2026") and collapse to date-only.
     timestamp = pd.to_datetime(text, errors="coerce")
     if pd.isna(timestamp):
         return None
@@ -46,7 +48,6 @@ def _normalize_event_date(value: Any) -> pd.Timestamp | None:
 
 
 def _hour_to_period(hour: int) -> str:
-    # Bucket hours into coarse periods used by both filtering and scoring.
     if 5 <= hour < 12:
         return "morning"
     if 12 <= hour < 17:
@@ -145,6 +146,7 @@ def filter_by_time_period(
 
     target_period = _normalize_period(preferred_period)
     if target_period == "any":
+        # Keep full result set when user does not want time-of-day constraints.
         return df.copy().reset_index(drop=True)
 
     timestamps = pd.to_datetime(df["start_time"], errors="coerce")
@@ -167,6 +169,7 @@ def filter_by_event_date(
         return df.copy()
 
     timestamps = pd.to_datetime(df["start_time"], errors="coerce")
+    # Compare at day granularity so HH:MM differences do not exclude valid same-day events.
     on_target_date = timestamps.dt.normalize() == target_date
     return df[on_target_date].copy().reset_index(drop=True)
 
@@ -189,6 +192,7 @@ def _budget_score(cost: float, budget: float) -> float:
 def _time_score(timestamp: Any, prefs: UserPreferences) -> float:
     preferred_period = _normalize_period(prefs.preferred_period)
     if preferred_period == "any":
+        # Neutral/full credit when user has no time-of-day preference.
         return 1.0
 
     if pd.isna(timestamp):
@@ -209,7 +213,7 @@ def score_candidates(df: pd.DataFrame, prefs: UserPreferences) -> pd.DataFrame:
     """
     Key recommendation flow:
     1) normalize candidate fields
-    2) filter by price, preferred period of day, and optional date
+    2) filter by price, preferred period of day, and date (optional, if user specified)
     3) score remaining events
     """
     prepared = _prepare_candidates(df)
