@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pittsburgh Event Finder</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="main">
+  <h1>Pittsburgh Event Finder</h1>
+
+  <form method="POST">
+    <label for="event_date">Event date (choose a date in the next 10 days):</label>
+    <input type="date" id="event_date" name="event_date">
+    <br><br>
+
+    <label for="preferred_period">Time of day:</label>
+    <select id="preferred_period" name="preferred_period">
+      <option value="any" selected>Any</option>
+      <option value="morning">Morning</option>
+      <option value="afternoon">Afternoon</option>
+      <option value="evening">Evening</option>
+    </select>
+    <br><br>
+
+    <label for="budget">Max price (budget):</label>
+    <input type="number" id="budget" name="budget" step="0.01" min="0" placeholder="e.g., 25">
+    <br><br>
+
+    <label for="max_results">Number of results:</label>
+    <input type="number" id="max_results" name="max_results" min="1" max="20" value="5">
+    <br><br>
+
+    <button type="submit">Find events</button>
+  </form>
+
+  <hr>
+
+  {% if error %}
+    <p><strong>{{ error }}</strong></p>
+  {% endif %}
+
+  {% if suggestions %}
+    <h2>Suggestions</h2>
+
+    {% for plan in suggestions %}
+      <div style="margin-bottom: 16px;">
+        <h3>{{ plan.plan_name }}</h3>
+        <p>
+          Estimated cost: ${{ "%.2f"|format(plan.total_estimated_cost) }}<br>
+          Score: {{ plan.score }}
+        </p>
+
+        {% for stop in plan.stops %}
+          <p>
+            <strong>{{ stop.name }}</strong><br>
+            {% if stop.start_time %}When: {{ stop.start_time }}<br>{% endif %}
+            {% if stop.location %}Where: {{ stop.location }}<br>{% endif %}
+            {% if stop.source %}Source: {{ stop.source }}<br>{% endif %}
+            {% if stop.url %}<a href="{{ stop.url }}" target="_blank" rel="noopener">Link</a>{% endif %}
+          </p>
+        {% endfor %}
+      </div>
+      <hr>
+    {% endfor %}
+  {% endif %}
+</div>
+</body>
+</html>

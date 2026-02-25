@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>{{ title }}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="main">
+  <h1>{{ title }}</h1>
+
+  {% if help_text %}<p>{{ help_text }}</p>{% endif %}
+  {% if error %}<p><strong>{{ error }}</strong></p>{% endif %}
+
+  <form method="post">
+    {% if input_type == "select" %}
+      <select name="value">
+        {% for opt in options %}
+          <option value="{{ opt.value }}" {% if opt.value == default %}selected{% endif %}>
+            {{ opt.label }}
+          </option>
+        {% endfor %}
+      </select>
+    {% else %}
+      <input
+        name="value"
+        type="{{ input_type }}"
+        value="{{ default }}"
+        {% if min is not none %}min="{{ min }}"{% endif %}
+        {% if step is not none %}step="{{ step }}"{% endif %}
+        {% if placeholder %}placeholder="{{ placeholder }}"{% endif %}
+        autofocus
+      />
+    {% endif %}
+
+    <button type="submit">Next</button>
+  </form>
+
+  <p><a href="/">Back to menu</a></p>
+</div>
+</body>
+</html>
