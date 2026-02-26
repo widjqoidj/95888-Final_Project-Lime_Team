@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Suggestions</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="main">
+  <h1>Top Event Suggestions</h1>
+  {% if summary %}
+    <p>
+      <strong>Requested {{ summary.requested }}, showing {{ summary.returned }}.</strong>
+      {% if summary.flexible_returned > 0 %}
+        {{ summary.exact_returned }} exact match(es) and {{ summary.flexible_returned }} flexible match(es) were used.
+      {% endif %}
+    </p>
+  {% endif %}
+
+  {% if not plans %}
+    <p><strong>No generated suggestions available. Choose option 1 first.</strong></p>
+    <p><a href="/">Back to menu</a></p>
+  {% else %}
+    {% for plan in plans %}
+      <h2>{{ loop.index }}. {{ plan.plan_name }}</h2>
+      <p>Estimated price: ${{ "%.2f"|format(plan.total_estimated_cost) }}</p>
+
+      {% for stop in plan.stops %}
+        <p>
+          <strong>{{ stop.name }}</strong><br>
+          {% if stop.start_time %}When: {{ stop.start_time }}<br>{% endif %}
+          {% if stop.location %}Location: {{ stop.location }}<br>{% endif %}
+          {% if stop.source %}Source: {{ stop.source }}<br>{% endif %}
+          {% if stop.url %}<a href="{{ stop.url }}" target="_blank" rel="noopener">Link</a>{% endif %}
+        </p>
+      {% endfor %}
+      <hr>
+    {% endfor %}
+
+    <p><a href="/">Back to menu</a></p>
+  {% endif %}
+</div>
+</body>
+</html>

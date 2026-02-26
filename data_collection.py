@@ -33,7 +33,6 @@ HEADERS = {
     )
 }
 
-#Code to control how many pages of results we scrape from each site, as to not overload with data 
 MAX_PAGES = 3
 LISTING_SLEEP_SECONDS = 1.5
 DETAIL_SLEEP_SECONDS = 1.2
@@ -71,7 +70,7 @@ def scrape_pgh_event_price(
 ) -> str:
     """
     Fetch a pgh.events detail page and extract price text.
-    Handles "$39.17", "$35.00 to $41.23", and "Free". - Initially did not catch this price "range" so had to modify
+    Handles "$39.17", "$35.00 to $41.23", and "Free".
     """
     if not event_url or event_url == "N/A":
         return "N/A"
@@ -199,7 +198,7 @@ def scrape_pgh_events(
                     )
                     price = matched.group(0) if matched else "N/A"
                 if price == "N/A" and source_url != "N/A":
-                    # Fallback: open the event detail page when listing card omits price. Another big catch
+                    # Fallback: open the event detail page when listing card omits price.
                     print(f"    ↳ [{event_name[:40]}] fetching detail page for price...")
                     price = scrape_pgh_event_price(
                         source_url,
@@ -226,10 +225,9 @@ def scrape_pgh_events(
     print(f"\n[pgh.events] Total: {len(pgh_events)} events\n")
     return pgh_events
 
-#Scrape Eventbrite Data
 
 def parse_eventbrite_datetime(soup: BeautifulSoup, raw_html: str) -> tuple[str, str]:
-    # Strategy 1: <time datetime="..."> HTML
+    # Strategy 1: <time datetime="...">
     time_el = soup.select_one("time[datetime]")
     if time_el:
         try:

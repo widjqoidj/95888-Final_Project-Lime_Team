@@ -2,30 +2,94 @@
 
 Team Name: Lime Team  
 Group Members (Andrew IDs):
-- Disheng Lu (dishengl)
-- (Name) (andrewid)
-- (Name) (andrewid)
+- Disheng Lu (`dishengl`)
+- (Name) (`andrewid`)
+- (Name) (`andrewid`)
 
 ## Product Vision
-Make event discovery in Pittsburgh faster by surfacing relevant suggestions based on budget and time of day.
+Help users quickly find relevant Pittsburgh events based on budget, date, and time-of-day preferences.
 
 ## Overview
-`Burgh Date Planner` collects Pittsburgh event listings from multiple web sources, saves a cleaned CSV output, and generates ranked event suggestions in a CLI.
-
-## Current Workflow
-1. `data_collection.py` scrapes and cleans events from configured sources.
-2. Cleaned data is saved to `data/pittsburgh_events.csv`.
-3. `main.py` loads that CSV and validates a strict input schema.
-4. `recommend.py` filters and ranks events by budget, preferred period (`morning`, `afternoon`, `evening`), and optional event date.
+This project scrapes event listings, cleans them into a local CSV, and generates ranked event suggestions through:
+- a Flask web app (default runtime)
+- a CLI flow (available in `main.py`)
 
 ## Data Sources
-- Eventbrite Pittsburgh (`https://www.eventbrite.com/d/pa--pittsburgh/all-events/`)
-- PGH.Events (`https://pgh.events/`)
+- Eventbrite Pittsburgh: `https://www.eventbrite.com/d/pa--pittsburgh/all-events/`
+- PGH.Events: `https://pgh.events/`
 
 Source configuration lives in `config.py`.
 
-## CSV Schema
-`data/pittsburgh_events.csv` currently contains:
+## Tech Stack
+- Python 3.11+ (runtime target in `runtime.txt`)
+- `requests`, `beautifulsoup4`, `pandas`
+- `flask` (web app), `gunicorn` (production server option)
+
+## Setup
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Run the Project
+
+### 1) Refresh event data
+```bash
+python3 data_collection.py
+```
+This updates `data/pittsburgh_events.csv`.
+
+### 2) Start the web app (default)
+```bash
+python3 main.py
+```
+Then open:
+- `http://127.0.0.1:5000/`
+
+Optional health check:
+- `http://127.0.0.1:5000/healthz`
+
+### 3) Optional production-style run
+```bash
+gunicorn main:app
+```
+
+### 4) Optional CLI mode
+`main.py` currently starts the Flask app by default.  
+To run CLI mode, switch the bottom entrypoint in `main.py` from `app.run(...)` to `main_cli()`.
+
+## Web Wizard Flow
+The web flow (`/wizard/...`) collects preferences in this order:
+1. Max budget
+2. Event date
+3. Preferred time of day
+4. Number of suggestions
+
+Date step behavior:
+- If no date is provided, date filtering is skipped.
+- If a date is provided and `Flexible dates` is unchecked, matching is strict by that date.
+- If a date is provided and `Flexible dates` is checked, nearby dates can be used when exact-date matches are insufficient.
+
+Suggestions page shows a summary line like:
+- `Requested 5, showing 5. 2 exact match(es) and 3 nearby match(es) were used.`
+
+## Recommendation Logic (`recommend.py`)
+Core logic:
+1. Validate required columns and normalize event rows.
+2. Parse price text into numeric estimated cost.
+3. Build a unified `start_time` from `date` + `time`.
+4. Apply strict filters (budget, period, optional date).
+5. Score candidates (`price_score` 55%, `time_score` 45%).
+6. If needed, backfill via staged flexible filtering:
+   - exact filters
+   - flexible period
+   - flexible date (only when `Flexible dates` is enabled)
+   - flexible period + date (only when `Flexible dates` is enabled)
+7. For flexible-date stages, candidates are limited to a nearby date window (`±3` days).
+
+## Data Schema
+`main.py` expects these required input columns from the processed CSV:
 - `event_name`
 - `date`
 - `time`
@@ -33,48 +97,11 @@ Source configuration lives in `config.py`.
 - `price`
 - `source`
 - `url`
-- `max_price` (derived numeric upper-bound price when available)
 
-During loading, `event_name` is normalized to `name` for recommendation.
-
-In schema validation, `main.py` strictly requires the first seven columns above and allows extra columns (such as `max_price`).
-
-## Tech Stack
-- Python 3.10+
-- `requests`, `beautifulsoup4`, `pandas`
-
-## Installation
-1. Clone/download this project folder.
-2. Create and activate a virtual environment.
-3. Install dependencies manually:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-## Run
-1. Collect or refresh event data:
-
-```bash
-python3 data_collection.py
-```
-
-2. Run the recommendation CLI:
-
-```bash
-python3 main.py
-```
-
-The CLI prompts for:
-- max budget (USD)
-- optional event date filter (`YYYY-MM-DD`)
-- preferred time of day (`morning`, `afternoon`, `evening`, `any`)
-- number of suggestions to generate
+Extra columns are allowed.
 
 ## Project Structure
-```
+```text
 .
 ├── main.py
 ├── config.py
@@ -82,35 +109,17 @@ The CLI prompts for:
 ├── recommend.py
 ├── utils.py
 ├── requirements.txt
-├── .env.example
-├── data/
-│   └── pittsburgh_events.csv
+├── runtime.txt
+├── templates/
+├── static/
+└── data/
+    └── pittsburgh_events.csv
 ```
-
-## Recommendation Logic
-`recommend.py` performs:
-1. Input validation for required recommendation fields.
-2. Price parsing from text (for example, `Free`, `$15`, `$10-$20`).
-3. Datetime synthesis from `date` + `time`.
-4. Filtering by budget, preferred period, and optional event date.
-5. Scoring with weighted budget/time scores and ranking.
-
-## Notes
-- `main.py` uses a strict schema check; missing required CSV columns will raise an error.
-- If no suggestions match, try a different date, period, or a higher budget.
 
 ## GenAI Use
 - Model: ChatGPT-5.3-Codex
-- Use case: 
-    - Help with integration of data collection script to overall project codebase
-    - Configration and utility file setup
-    - Improvement and validation checks of recommendation logic
-    - Writing README.md
-
-
-## Rubric Alignment Checklist
-- 2+ online data sources: yes (2 configured)
-- at least 1 scraped source: yes (2 configured)
-- full Python pipeline (collect -> clean -> recommend -> output): yes
-- user interaction: yes (menu-based CLI)
-- one runnable main file: yes (`main.py`)
+- Use cases:
+  - Integration and refactoring support
+  - Configuration and utility setup
+  - Recommendation logic improvements and validation
+  - README/documentation updates

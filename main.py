@@ -1,19 +1,36 @@
 """
-Main menu-driven CLI for Burgh Event Planner.
-Recommendation logic focuses on event suggestions using price/time/date filtering.
+Burgh Event Planner
+
+This file contains:
+- Original command line interface (dishengl)
+- Web application wrapper (knorris2)
+- Shared "core" wrappers are used by command line and web interfaces:
+    1) load_events_df()
+    2) generate_suggestions_for_preferences(df, prefs)
 """
 
 from __future__ import annotations
+
+# imports
 
 import os
 from pathlib import Path
 
 import pandas as pd
+from flask import Flask, render_template, request, redirect, session, url_for
 
 from config import LATEST_OPTIONS_FILE, RECOMMENDATION_SAMPLE_FILE
-from recommend import UserPreferences, build_event_suggestions, format_plan, score_candidates
+from recommend import (
+    UserPreferences,
+    build_event_suggestions,
+    format_plan,
+    select_ranked_candidates_with_flexible_filters,
+)
 from utils import ensure_project_directories
 
+
+
+# Original command line interface (dishengl)
 
 REQUIRED_INPUT_COLUMNS = [
     "event_name",
@@ -27,7 +44,6 @@ REQUIRED_INPUT_COLUMNS = [
 
 
 def _load_local_env(env_path: Path = Path(".env")) -> None:
-    """Load local environment variables from .env if present."""
     if not env_path.exists():
         return
 
@@ -41,6 +57,72 @@ def _load_local_env(env_path: Path = Path(".env")) -> None:
         if key and key not in os.environ:
             os.environ[key] = value
 
+
+def _ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
+    missing_columns = [column for column in REQUIRED_INPUT_COLUMNS if column not in df.columns]
+    if missing_columns:
+        raise ValueError("Dataset is missing required columns: " + ", ".join(missing_columns))
+
+    normalized = df[REQUIRED_INPUT_COLUMNS].copy()
+    normalized["name"] = normalized["event_name"].fillna("").astype(str).str.strip()
+
+    for column in ["source", "location", "price", "url", "date", "time"]:
+        normalized[column] = normalized[column].fillna("").astype(str).str.strip()
+
+    normalized = normalized[normalized["name"] != ""]
+    normalized = normalized.drop(columns=["event_name"])
+
+    normalized = normalized.drop_duplicates(
+        subset=["source", "name", "date", "time", "location"]
+    ).reset_index(drop=True)
+    return normalized
+
+
+def _load_dataset() -> tuple[Path, pd.DataFrame]:
+    if not RECOMMENDATION_SAMPLE_FILE.exists():
+        raise FileNotFoundError(
+            f"Latest processed dataset not found: {RECOMMENDATION_SAMPLE_FILE}\n"
+            "Run data collection first to generate latest event data."
+        )
+
+    df = pd.read_csv(RECOMMENDATION_SAMPLE_FILE)
+    df = _ensure_schema(df)
+
+    if LATEST_OPTIONS_FILE != RECOMMENDATION_SAMPLE_FILE:
+        LATEST_OPTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(LATEST_OPTIONS_FILE, index=False)
+
+    print(f"\nLoaded event dataset: {len(df)} records")
+    print(f"Working dataset source: {RECOMMENDATION_SAMPLE_FILE}")
+    return LATEST_OPTIONS_FILE, df
+
+
+# web-friendly wrappers (knorris2)
+
+def load_events_df() -> pd.DataFrame:
+    ensure_project_directories()
+    _load_local_env()
+    _, df = _load_dataset()
+    return df
+
+
+def generate_suggestions_for_preferences(df: pd.DataFrame, prefs: UserPreferences) -> list[dict]:
+    # Shared helper used by CLI: run ranking flow and convert rows to UI-friendly plan objects.
+    scored, _ = select_ranked_candidates_with_flexible_filters(df, prefs)
+    return build_event_suggestions(scored, prefs)
+
+
+def generate_suggestions_and_summary_for_preferences(
+    df: pd.DataFrame,
+    prefs: UserPreferences,
+) -> tuple[list[dict], dict[str, int]]:
+    # Shared helper used by web flow: returns both plans and the strict-vs-flexible summary.
+    scored, summary = select_ranked_candidates_with_flexible_filters(df, prefs)
+    return build_event_suggestions(scored, prefs), summary
+
+
+
+# Original command line interface (dishengl)
 
 def _ask_float(prompt: str, default: float) -> float:
     raw = input(f"{prompt} [{default}]: ").strip()
@@ -77,48 +159,6 @@ def _ask_optional_date(prompt: str) -> str | None:
     return pd.Timestamp(parsed).strftime("%Y-%m-%d")
 
 
-def _ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
-    missing_columns = [column for column in REQUIRED_INPUT_COLUMNS if column not in df.columns]
-    if missing_columns:
-        raise ValueError(
-            "Dataset is missing required columns: "
-            + ", ".join(missing_columns)
-        )
-
-    normalized = df[REQUIRED_INPUT_COLUMNS].copy()
-    normalized["name"] = normalized["event_name"].fillna("").astype(str).str.strip()
-
-    for column in ["source", "location", "price", "url", "date", "time"]:
-        normalized[column] = normalized[column].fillna("").astype(str).str.strip()
-
-    normalized = normalized[normalized["name"] != ""]
-    normalized = normalized.drop(columns=["event_name"])
-
-    normalized = normalized.drop_duplicates(
-        subset=["source", "name", "date", "time", "location"]
-    ).reset_index(drop=True)
-    return normalized
-
-
-def _load_dataset() -> tuple[Path, pd.DataFrame]:
-    if not RECOMMENDATION_SAMPLE_FILE.exists():
-        raise FileNotFoundError(
-            f"Latest processed dataset not found: {RECOMMENDATION_SAMPLE_FILE}\n"
-            "Run data collection first to generate latest event data."
-        )
-
-    df = pd.read_csv(RECOMMENDATION_SAMPLE_FILE)
-    df = _ensure_schema(df)
-
-    if LATEST_OPTIONS_FILE != RECOMMENDATION_SAMPLE_FILE:
-        LATEST_OPTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(LATEST_OPTIONS_FILE, index=False)
-
-    print(f"\nLoaded event dataset: {len(df)} records")
-    print(f"Working dataset source: {RECOMMENDATION_SAMPLE_FILE}")
-    return LATEST_OPTIONS_FILE, df
-
-
 def _print_menu() -> None:
     print("\nMenu")
     print(
@@ -139,7 +179,6 @@ def _collect_preferences() -> UserPreferences:
     period = input(
         "Preferred time of day (morning, afternoon, evening, any) [any]: "
     ).strip().lower()
-    # Invalid period entries fall back to any for predictable behavior.
     if period not in {"morning", "afternoon", "evening", "any"}:
         if period:
             print("Invalid period; using default.")
@@ -151,6 +190,7 @@ def _collect_preferences() -> UserPreferences:
         preferred_period=period,
         max_results=max(1, max_results),
         event_date=event_date,
+        allow_flexible_dates=False,
     )
 
 
@@ -166,16 +206,13 @@ def _print_generated_plans(generated_plans: list[dict]) -> None:
         print()
 
 
-def main() -> None:
-    ensure_project_directories()
-    _load_local_env()
-
+def main_cli() -> None:
     print("=" * 30)
     print("Welcome to Burgh Event Planner")
     print("=" * 30)
     print("Loading latest event dataset...\n")
 
-    _, df = _load_dataset()
+    df = load_events_df()
     generated_plans: list[dict] = []
 
     while True:
@@ -184,8 +221,8 @@ def main() -> None:
 
         if choice == "1":
             prefs = _collect_preferences()
-            scored = score_candidates(df, prefs)
-            generated_plans = build_event_suggestions(scored, prefs)
+            generated_plans = generate_suggestions_for_preferences(df, prefs)
+
             if not generated_plans:
                 print(
                     "\nNo suggestions matched current constraints. "
@@ -206,5 +243,228 @@ def main() -> None:
             print("\nInvalid option. Please try again.")
 
 
+# Web application (knorris2)
+
+app = Flask(__name__)
+app.secret_key = "dev-secret-change-me"  
+
+_EVENTS_DF: pd.DataFrame | None = None
+_LOAD_ERROR: str | None = None
+
+
+def get_cached_df() -> pd.DataFrame | None:
+    global _EVENTS_DF, _LOAD_ERROR
+    # Cache dataset load result for this process to avoid re-reading on every request.
+    if _EVENTS_DF is not None or _LOAD_ERROR is not None:
+        return _EVENTS_DF
+    try:
+        _EVENTS_DF = load_events_df()
+        _LOAD_ERROR = None
+    except Exception as exc:
+        _EVENTS_DF = None
+        _LOAD_ERROR = str(exc)
+    return _EVENTS_DF
+
+
+def build_user_preferences_from_session() -> UserPreferences:
+    # Session stores primitive types; normalize them into the typed preference object.
+    return UserPreferences(
+        budget=float(session.get("budget", 75.0)),
+        preferred_period=str(session.get("preferred_period", "any")),
+        max_results=int(session.get("max_results", 3)),
+        event_date=(session.get("event_date") or None) or None,
+        allow_flexible_dates=bool(session.get("allow_flexible_dates", False)),
+    )
+
+
+@app.get("/healthz")
+def healthz():
+    return "ok", 200
+
+
+@app.route("/")
+def web_menu():
+    get_cached_df()
+    message = session.pop("message", None)
+    if _LOAD_ERROR:
+        message = f"Dataset load error: {_LOAD_ERROR}"
+    return render_template("menu.html", message=message)
+
+
+@app.route("/wizard/budget", methods=["GET", "POST"])
+def wizard_budget():
+    if request.method == "POST":
+        raw = (request.form.get("value") or "").strip()
+        try:
+            budget = float(raw) if raw else 75.0
+        except ValueError:
+            return render_template(
+                "step.html",
+                title="Max event budget (USD)",
+                help_text="Enter a number (default 75.0).",
+                input_type="number",
+                step="0.01",
+                min="0",
+                default="75.0",
+                error="Invalid number.",
+            )
+
+        session["budget"] = max(0.0, budget)
+        return redirect(url_for("wizard_date"))
+
+    return render_template(
+        "step.html",
+        title="Max event budget (USD)",
+        help_text="Default is 75.0",
+        input_type="number",
+        step="0.01",
+        min="0",
+        default=str(session.get("budget", 75.0)),
+        placeholder="75.00",
+    )
+
+
+@app.route("/wizard/date", methods=["GET", "POST"])
+def wizard_date():
+    if request.method == "POST":
+        raw = (request.form.get("value") or "").strip()
+        allow_flexible_dates = request.form.get("allow_flexible_dates") == "on"
+        if not raw:
+            session["event_date"] = ""
+            # Flexible dates only applies when the user explicitly selects a target date.
+            session["allow_flexible_dates"] = False
+            return redirect(url_for("wizard_period"))
+
+        parsed = pd.to_datetime(raw, errors="coerce")
+        if pd.isna(parsed):
+            return render_template(
+                "step.html",
+                title="Event date (Optional)",
+                help_text=(
+                    "Pick a date in the next 10 days or leave blank for any date. "
+                    "Enable Flexible dates to include nearby days when exact-date results are sparse."
+                ),
+                input_type="date",
+                default=session.get("event_date", ""),
+                show_flexible_dates=True,
+                flexible_dates_checked=allow_flexible_dates,
+                error="Invalid date; try again or leave blank.",
+            )
+
+        session["event_date"] = pd.Timestamp(parsed).strftime("%Y-%m-%d")
+        session["allow_flexible_dates"] = allow_flexible_dates
+        return redirect(url_for("wizard_period"))
+
+    return render_template(
+        "step.html",
+        title="Event date (optional)",
+        help_text=(
+            "Pick a date in the next 10 days or leave blank for any date. "
+            "Enable Flexible dates to include nearby days when exact-date results are sparse."
+        ),
+        input_type="date",
+        default=session.get("event_date", ""),
+        show_flexible_dates=True,
+        flexible_dates_checked=bool(session.get("allow_flexible_dates", False)),
+    )
+
+
+@app.route("/wizard/period", methods=["GET", "POST"])
+def wizard_period():
+    if request.method == "POST":
+        period = (request.form.get("value") or "any").strip().lower()
+        if period not in {"morning", "afternoon", "evening", "any"}:
+            period = "any"
+        session["preferred_period"] = period
+        return redirect(url_for("wizard_max_results"))
+
+    options = [
+        {"value": "any", "label": "Any"},
+        {"value": "morning", "label": "Morning"},
+        {"value": "afternoon", "label": "Afternoon"},
+        {"value": "evening", "label": "Evening"},
+    ]
+
+    return render_template(
+        "step.html",
+        title="Preferred time of day",
+        help_text="Choose morning, afternoon, evening, or any.",
+        input_type="select",
+        options=options,
+        default=session.get("preferred_period", "any"),
+    )
+
+
+@app.route("/wizard/max-results", methods=["GET", "POST"])
+def wizard_max_results():
+    if request.method == "POST":
+        raw = (request.form.get("value") or "").strip()
+        try:
+            max_results = int(raw) if raw else 3
+        except ValueError:
+            return render_template(
+                "step.html",
+                title="Number of suggestions to generate",
+                help_text="Enter an integer (default 3).",
+                input_type="number",
+                min="1",
+                step="1",
+                default=str(session.get("max_results", 3)),
+                error="Invalid integer.",
+            )
+
+        session["max_results"] = max(1, max_results)
+        return redirect(url_for("wizard_generate"))
+
+    return render_template(
+        "step.html",
+        title="Number of suggestions to generate",
+        help_text="Default is 3",
+        input_type="number",
+        min="1",
+        step="1",
+        default=str(session.get("max_results", 3)),
+    )
+
+
+@app.route("/wizard/generate")
+def wizard_generate():
+    df = get_cached_df()
+    if df is None:
+        session.pop("suggestion_summary", None)
+        session["message"] = f"Dataset is not available yet: {_LOAD_ERROR}"
+        return redirect(url_for("web_menu"))
+
+    prefs = build_user_preferences_from_session()
+    plans, summary = generate_suggestions_and_summary_for_preferences(df, prefs)
+    session["generated_plans"] = plans
+    # Summary powers the message like "Requested N, showing M..." on suggestions page.
+    session["suggestion_summary"] = summary
+
+    if not plans:
+        session["message"] = (
+            "No suggestions matched current constraints. "
+            "Try a different date, period, or higher budget."
+        )
+        return redirect(url_for("web_menu"))
+
+    return redirect(url_for("suggestions"))
+
+
+@app.route("/suggestions")
+def suggestions():
+    plans = session.get("generated_plans", [])
+    summary = session.get("suggestion_summary")
+    return render_template("suggestions.html", plans=plans, summary=summary)
+
+
+@app.route("/exit")
+def exit_app():
+    session.clear()
+    return render_template("menu.html", message="Session cleared. (This is the web version of Exit.)")
+
+
 if __name__ == "__main__":
-    main()
+    app.run(debug=True)
+    # To run the command line locally, comment the line above and run:
+    # main_cli()
