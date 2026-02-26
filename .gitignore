@@ -209,3 +209,4 @@ __marimo__/
 # Project-generated artifacts
 data/processed/*.csv
 outputs/plots/*.png
+.DS_Store
