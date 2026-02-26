@@ -304,6 +304,98 @@ def parse_eventbrite_location(soup: BeautifulSoup) -> str:
     return min(candidates, key=len) if candidates else "N/A"
 
 
+def _coerce_price_amount(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        match = re.search(r"([\d,]+(?:\.\d{1,2})?)", value)
+        if match:
+            return float(match.group(1).replace(",", ""))
+    return None
+
+
+def _extract_offer_prices(offers: Any) -> list[float]:
+    prices: list[float] = []
+    if isinstance(offers, list):
+        for offer in offers:
+            prices.extend(_extract_offer_prices(offer))
+    elif isinstance(offers, dict):
+        for key in ("price", "lowPrice", "highPrice"):
+            amount = _coerce_price_amount(offers.get(key))
+            if amount is not None:
+                prices.append(amount)
+        nested_offers = offers.get("offers")
+        if nested_offers is not None:
+            prices.extend(_extract_offer_prices(nested_offers))
+    return prices
+
+
+def parse_eventbrite_price(soup: BeautifulSoup, raw_html: str) -> str:
+    # Strategy 1: JSON-LD usually carries canonical Eventbrite offer pricing.
+    collected_prices: list[float] = []
+    for script in soup.select("script[type='application/ld+json']"):
+        try:
+            data = json.loads(script.string or "")
+        except Exception:
+            continue
+        records = data if isinstance(data, list) else [data]
+        for record in records:
+            if isinstance(record, dict):
+                offers = record.get("offers")
+                if offers is not None:
+                    collected_prices.extend(_extract_offer_prices(offers))
+
+    positive_prices = [price for price in collected_prices if price > 0]
+    if positive_prices:
+        low_price = min(positive_prices)
+        high_price = max(positive_prices)
+        if low_price == high_price:
+            return f"${high_price:.2f}"
+        return f"${low_price:.2f} - ${high_price:.2f}"
+    if collected_prices and max(collected_prices) == 0:
+        return "Free"
+
+    # Strategy 2: visible price containers on the server-rendered page.
+    free_seen = False
+    for selector in [
+        "[class*='ticket-price']",
+        "[class*='conversion-bar']",
+        "[data-spec='price']",
+        "[class*='price']",
+    ]:
+        for element in soup.select(selector):
+            text = clean(element.get_text(" "))
+            money_match = re.search(
+                r"(From\s+\$[\d,]+(?:\.\d{1,2})?"
+                r"|\$[\d,]+(?:\.\d{1,2})?\s*(?:to|-|–)\s*\$[\d,]+(?:\.\d{1,2})?"
+                r"|\$[\d,]+(?:\.\d{1,2})?)",
+                text,
+                re.IGNORECASE,
+            )
+            if money_match:
+                return money_match.group(1)
+            if re.search(r"\bfree\b", text, re.IGNORECASE):
+                free_seen = True
+    if free_seen:
+        return "Free"
+
+    # Strategy 3: broad raw-HTML fallback (money-first, then free marker).
+    # Eventbrite pages often include unrelated "Free" text (global nav/i18n strings),
+    # so matching Free before dollar amounts can mislabel paid events as free.
+    money_match = re.search(
+        r"(From\s+\$[\d,]+(?:\.\d{1,2})?"
+        r"|\$[\d,]+(?:\.\d{1,2})?\s*(?:to|-|–)\s*\$[\d,]+(?:\.\d{1,2})?"
+        r"|\$[\d,]+(?:\.\d{1,2})?)",
+        raw_html,
+        re.IGNORECASE,
+    )
+    if money_match:
+        return clean(money_match.group(1))
+    if re.search(r"\bfree\b", raw_html, re.IGNORECASE):
+        return "Free"
+    return "N/A"
+
+
 def scrape_eventbrite(
     max_pages: int = MAX_PAGES,
     request_timeout: int = SCRAPE_REQUEST_TIMEOUT_SECONDS,
@@ -348,13 +440,7 @@ def scrape_eventbrite(
         event_name = get_text(name_el)
         event_date, event_time = parse_eventbrite_datetime(detail, response.text)
         location = parse_eventbrite_location(detail)
-        price_el = detail.select_one("[class*='ticket-price']") or detail.select_one(
-            "[class*='conversion-bar']"
-        )
-        price = get_text(price_el)
-        if price == "N/A":
-            matched = re.search(r"(Free|\$[\d,.]+)", response.text)
-            price = matched.group(0).capitalize() if matched else "N/A"
+        price = parse_eventbrite_price(detail, response.text)
 
         eb_events.append(
             {

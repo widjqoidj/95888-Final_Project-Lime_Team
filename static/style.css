@@ -41,3 +41,13 @@
     a {
         color: #333;
     }
+    .price-notice {
+        background: #fff4cc;
+        border: 1px solid #d4b106;
+        color: #3d2f00;
+        padding: 10px 12px;
+        margin-bottom: 16px;
+        border-radius: 4px;
+        font-size: 14px;
+        line-height: 1.4;
+    }
