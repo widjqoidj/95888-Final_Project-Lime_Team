@@ -3,7 +3,7 @@
 Team Name: Lime Team  
 Group Members (Andrew IDs):
 - Disheng Lu (`dishengl`)
-- (Name) (`andrewid`)
+- Katerina Hrisopoulos (`khrisopo`)
 - (Name) (`andrewid`)
 
 ## Product Vision
