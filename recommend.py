@@ -6,7 +6,7 @@ Filter and rank events by time of day, date, and price.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import pandas as pd
@@ -19,12 +19,35 @@ class UserPreferences:
     max_results: int = 5
     min_price: float = 0.0
     event_date: str | None = None
+    # If False, date matching stays strict and no flexible date backfill is attempted.
+    allow_flexible_dates: bool = False
 
 
 PERIODS = ("morning", "afternoon", "evening")
 # "any" is a bypass sentinel used by CLI and scoring to disable period filtering.
 VALID_PERIODS = PERIODS + ("any",)
 PERIOD_INDEX = {period: index for index, period in enumerate(PERIODS)}
+
+MATCH_LEVEL_EXACT = "exact"
+MATCH_LEVEL_FLEXIBLE_PERIOD = "flexible_period"
+MATCH_LEVEL_FLEXIBLE_DATE = "flexible_date"
+MATCH_LEVEL_FLEXIBLE_PERIOD_AND_DATE = "flexible_period_and_date"
+
+MATCH_LEVEL_PRIORITY = {
+    MATCH_LEVEL_EXACT: 0,
+    MATCH_LEVEL_FLEXIBLE_PERIOD: 1,
+    MATCH_LEVEL_FLEXIBLE_DATE: 2,
+    MATCH_LEVEL_FLEXIBLE_PERIOD_AND_DATE: 3,
+}
+
+MATCH_LEVEL_LABEL = {
+    MATCH_LEVEL_EXACT: "Exact match",
+    MATCH_LEVEL_FLEXIBLE_PERIOD: "Flexible match (time flexible)",
+    MATCH_LEVEL_FLEXIBLE_DATE: "Flexible match (date flexible)",
+    MATCH_LEVEL_FLEXIBLE_PERIOD_AND_DATE: "Flexible match (date and time flexible)",
+}
+
+FLEXIBLE_DATE_WINDOW_DAYS = 3
 
 
 def _normalize_period(value: Any, default: str = "any") -> str:
@@ -256,6 +279,165 @@ def score_candidates(df: pd.DataFrame, prefs: UserPreferences) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
+def _candidate_identity(row: pd.Series) -> tuple[str, str, str, str, str]:
+    # Stable event identity used to deduplicate items that can reappear across stages.
+    return (
+        str(row.get("source", "")).strip().lower(),
+        str(row.get("name", "")).strip().lower(),
+        str(row.get("date", "")).strip(),
+        str(row.get("time", "")).strip(),
+        str(row.get("location", "")).strip().lower(),
+    )
+
+
+def _build_flexible_filter_stages(prefs: UserPreferences) -> list[tuple[str, UserPreferences]]:
+    """
+    Build ordered scoring stages:
+    1) exact filters
+    2) flexible period only (if period is constrained)
+    3) flexible date only (only when flexible dates is enabled)
+    4) flexible period and date (only when flexible dates is enabled)
+    """
+    stages = [(MATCH_LEVEL_EXACT, prefs)]
+    has_period_filter = _normalize_period(prefs.preferred_period) != "any"
+    has_date_filter = _normalize_event_date(prefs.event_date) is not None
+
+    if has_period_filter:
+        stages.append(
+            (
+                MATCH_LEVEL_FLEXIBLE_PERIOD,
+                replace(prefs, preferred_period="any"),
+            )
+        )
+
+    if has_date_filter and prefs.allow_flexible_dates:
+        stages.append(
+            (
+                MATCH_LEVEL_FLEXIBLE_DATE,
+                replace(prefs, event_date=None),
+            )
+        )
+
+    if has_period_filter and has_date_filter and prefs.allow_flexible_dates:
+        stages.append(
+            (
+                MATCH_LEVEL_FLEXIBLE_PERIOD_AND_DATE,
+                replace(prefs, preferred_period="any", event_date=None),
+            )
+        )
+
+    return stages
+
+
+def _filter_to_nearby_dates(
+    scored_df: pd.DataFrame,
+    target_date: pd.Timestamp | None,
+    max_distance_days: int = FLEXIBLE_DATE_WINDOW_DAYS,
+) -> pd.DataFrame:
+    # Keep flexible-date results within a bounded window around the requested day.
+    if scored_df.empty or target_date is None:
+        return scored_df.copy()
+
+    filtered = scored_df.copy()
+    event_days = pd.to_datetime(filtered["start_time"], errors="coerce").dt.normalize()
+    date_distance_days = (event_days - target_date).abs().dt.days
+    filtered["_date_distance_days"] = date_distance_days
+
+    nearby_only = (
+        filtered["_date_distance_days"].notna()
+        & (filtered["_date_distance_days"] <= max_distance_days)
+    )
+    return filtered[nearby_only].copy().reset_index(drop=True)
+
+
+def _apply_stage_specific_filters(
+    scored_df: pd.DataFrame,
+    stage_level: str,
+    user_prefs: UserPreferences,
+) -> pd.DataFrame:
+    # Only flexible-date stages use a nearby-date window; other stages keep full stage output.
+    if stage_level not in {MATCH_LEVEL_FLEXIBLE_DATE, MATCH_LEVEL_FLEXIBLE_PERIOD_AND_DATE}:
+        return scored_df
+
+    target_date = _normalize_event_date(user_prefs.event_date)
+    return _filter_to_nearby_dates(scored_df, target_date)
+
+
+def select_ranked_candidates_with_flexible_filters(
+    df: pd.DataFrame,
+    prefs: UserPreferences,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """
+    Return up to prefs.max_results by prioritizing strict matches first, then
+    progressively applying flexible period/date filters when needed.
+    """
+    target = max(1, int(prefs.max_results))
+    selected_rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+
+    exact_available = 0
+
+    for level, stage_prefs in _build_flexible_filter_stages(prefs):
+        scored = score_candidates(df, stage_prefs)
+        scored = _apply_stage_specific_filters(scored, level, prefs)
+        if level == MATCH_LEVEL_EXACT:
+            exact_available = len(scored)
+        if scored.empty:
+            continue
+
+        for _, row in scored.iterrows():
+            identity = _candidate_identity(row)
+            if identity in seen:
+                continue
+
+            row_dict = row.to_dict()
+            # Track the stage that contributed this row for summary/ordering.
+            row_dict["_match_level"] = level
+            selected_rows.append(row_dict)
+            seen.add(identity)
+
+            if len(selected_rows) >= target:
+                break
+
+        if len(selected_rows) >= target:
+            break
+
+    if not selected_rows:
+        return pd.DataFrame(), {
+            "requested": target,
+            "returned": 0,
+            "exact_available": exact_available,
+            "exact_returned": 0,
+            "flexible_returned": 0,
+        }
+
+    selected = pd.DataFrame(selected_rows)
+    selected["_match_priority"] = selected["_match_level"].map(MATCH_LEVEL_PRIORITY).fillna(99)
+    if "_date_distance_days" in selected.columns:
+        date_distance_series = pd.to_numeric(selected["_date_distance_days"], errors="coerce")
+    else:
+        # Exact/period-flexible stages do not create date distance; treat as 0 for sorting.
+        date_distance_series = pd.Series(0, index=selected.index, dtype="float64")
+
+    # Sort by stage strictness first, then by date proximity, then recommendation score.
+    selected["_date_distance_sort"] = date_distance_series.fillna(0).astype(int)
+    selected = selected.sort_values(
+        by=["_match_priority", "_date_distance_sort", "overall_score", "time_score"],
+        ascending=[True, True, False, False],
+    ).head(target).reset_index(drop=True)
+
+    exact_returned = int((selected["_match_level"] == MATCH_LEVEL_EXACT).sum())
+    returned = len(selected)
+
+    return selected, {
+        "requested": target,
+        "returned": returned,
+        "exact_available": exact_available,
+        "exact_returned": exact_returned,
+        "flexible_returned": returned - exact_returned,
+    }
+
+
 def _row_to_stop(row: pd.Series) -> dict[str, Any]:
     timestamp = row["start_time"]
     start_time = ""
@@ -282,11 +464,14 @@ def build_event_suggestions(scored_df: pd.DataFrame, prefs: UserPreferences) -> 
 
     for index, (_, row) in enumerate(top.iterrows(), start=1):
         stop = _row_to_stop(row)
+        match_level = str(row.get("_match_level", MATCH_LEVEL_EXACT))
         suggestions.append(
             {
                 "plan_name": f"Event Suggestion #{index}",
                 "total_estimated_cost": round(float(row.get("estimated_cost", 0.0) or 0.0), 2),
                 "score": round(float(row.get("overall_score", 0.0) or 0.0), 4),
+                "match_level": match_level,
+                "match_label": MATCH_LEVEL_LABEL.get(match_level, MATCH_LEVEL_LABEL[MATCH_LEVEL_EXACT]),
                 "stops": [stop],
                 "backup_idea": "",
             }

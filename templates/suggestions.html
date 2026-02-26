@@ -6,6 +6,14 @@
 <body>
   <div class="main">
   <h1>Top Event Suggestions</h1>
+  {% if summary %}
+    <p>
+      <strong>Requested {{ summary.requested }}, showing {{ summary.returned }}.</strong>
+      {% if summary.flexible_returned > 0 %}
+        {{ summary.exact_returned }} exact match(es) and {{ summary.flexible_returned }} flexible match(es) were used.
+      {% endif %}
+    </p>
+  {% endif %}
 
   {% if not plans %}
     <p><strong>No generated suggestions available. Choose option 1 first.</strong></p>

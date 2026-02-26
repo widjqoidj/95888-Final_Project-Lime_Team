@@ -31,6 +31,17 @@
       />
     {% endif %}
 
+    {% if show_flexible_dates %}
+      <label>
+        <input
+          type="checkbox"
+          name="allow_flexible_dates"
+          {% if flexible_dates_checked %}checked{% endif %}
+        />
+        Flexible dates
+      </label>
+    {% endif %}
+
     <button type="submit">Next</button>
   </form>
 

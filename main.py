@@ -6,7 +6,7 @@ This file contains:
 - Web application wrapper (knorris2)
 - Shared "core" wrappers are used by command line and web interfaces:
     1) load_events_df()
-    2) generate_suggestions(df, prefs)
+    2) generate_suggestions_for_preferences(df, prefs)
 """
 
 from __future__ import annotations
@@ -20,7 +20,12 @@ import pandas as pd
 from flask import Flask, render_template, request, redirect, session, url_for
 
 from config import LATEST_OPTIONS_FILE, RECOMMENDATION_SAMPLE_FILE
-from recommend import UserPreferences, build_event_suggestions, format_plan, score_candidates
+from recommend import (
+    UserPreferences,
+    build_event_suggestions,
+    format_plan,
+    select_ranked_candidates_with_flexible_filters,
+)
 from utils import ensure_project_directories
 
 
@@ -101,9 +106,19 @@ def load_events_df() -> pd.DataFrame:
     return df
 
 
-def generate_suggestions(df: pd.DataFrame, prefs: UserPreferences) -> list[dict]:
-    scored = score_candidates(df, prefs)
+def generate_suggestions_for_preferences(df: pd.DataFrame, prefs: UserPreferences) -> list[dict]:
+    # Shared helper used by CLI: run ranking flow and convert rows to UI-friendly plan objects.
+    scored, _ = select_ranked_candidates_with_flexible_filters(df, prefs)
     return build_event_suggestions(scored, prefs)
+
+
+def generate_suggestions_and_summary_for_preferences(
+    df: pd.DataFrame,
+    prefs: UserPreferences,
+) -> tuple[list[dict], dict[str, int]]:
+    # Shared helper used by web flow: returns both plans and the strict-vs-flexible summary.
+    scored, summary = select_ranked_candidates_with_flexible_filters(df, prefs)
+    return build_event_suggestions(scored, prefs), summary
 
 
 
@@ -175,6 +190,7 @@ def _collect_preferences() -> UserPreferences:
         preferred_period=period,
         max_results=max(1, max_results),
         event_date=event_date,
+        allow_flexible_dates=False,
     )
 
 
@@ -205,7 +221,7 @@ def main_cli() -> None:
 
         if choice == "1":
             prefs = _collect_preferences()
-            generated_plans = generate_suggestions(df, prefs)
+            generated_plans = generate_suggestions_for_preferences(df, prefs)
 
             if not generated_plans:
                 print(
@@ -238,6 +254,7 @@ _LOAD_ERROR: str | None = None
 
 def get_cached_df() -> pd.DataFrame | None:
     global _EVENTS_DF, _LOAD_ERROR
+    # Cache dataset load result for this process to avoid re-reading on every request.
     if _EVENTS_DF is not None or _LOAD_ERROR is not None:
         return _EVENTS_DF
     try:
@@ -249,12 +266,14 @@ def get_cached_df() -> pd.DataFrame | None:
     return _EVENTS_DF
 
 
-def prefs_from_session() -> UserPreferences:
+def build_user_preferences_from_session() -> UserPreferences:
+    # Session stores primitive types; normalize them into the typed preference object.
     return UserPreferences(
         budget=float(session.get("budget", 75.0)),
         preferred_period=str(session.get("preferred_period", "any")),
         max_results=int(session.get("max_results", 3)),
         event_date=(session.get("event_date") or None) or None,
+        allow_flexible_dates=bool(session.get("allow_flexible_dates", False)),
     )
 
 
@@ -309,8 +328,11 @@ def wizard_budget():
 def wizard_date():
     if request.method == "POST":
         raw = (request.form.get("value") or "").strip()
+        allow_flexible_dates = request.form.get("allow_flexible_dates") == "on"
         if not raw:
             session["event_date"] = ""
+            # Flexible dates only applies when the user explicitly selects a target date.
+            session["allow_flexible_dates"] = False
             return redirect(url_for("wizard_period"))
 
         parsed = pd.to_datetime(raw, errors="coerce")
@@ -318,21 +340,32 @@ def wizard_date():
             return render_template(
                 "step.html",
                 title="Event date (Optional)",
-                help_text="Pick a date in the next 10 days or leave blank for any date.",
+                help_text=(
+                    "Pick a date in the next 10 days or leave blank for any date. "
+                    "Enable Flexible dates to include nearby days when exact-date results are sparse."
+                ),
                 input_type="date",
                 default=session.get("event_date", ""),
+                show_flexible_dates=True,
+                flexible_dates_checked=allow_flexible_dates,
                 error="Invalid date; try again or leave blank.",
             )
 
         session["event_date"] = pd.Timestamp(parsed).strftime("%Y-%m-%d")
+        session["allow_flexible_dates"] = allow_flexible_dates
         return redirect(url_for("wizard_period"))
 
     return render_template(
         "step.html",
         title="Event date (optional)",
-        help_text="Pick a date in the next 10 days or leave blank for any date.",
+        help_text=(
+            "Pick a date in the next 10 days or leave blank for any date. "
+            "Enable Flexible dates to include nearby days when exact-date results are sparse."
+        ),
         input_type="date",
         default=session.get("event_date", ""),
+        show_flexible_dates=True,
+        flexible_dates_checked=bool(session.get("allow_flexible_dates", False)),
     )
 
 
@@ -398,12 +431,15 @@ def wizard_max_results():
 def wizard_generate():
     df = get_cached_df()
     if df is None:
+        session.pop("suggestion_summary", None)
         session["message"] = f"Dataset is not available yet: {_LOAD_ERROR}"
         return redirect(url_for("web_menu"))
 
-    prefs = prefs_from_session()
-    plans = generate_suggestions(df, prefs)
+    prefs = build_user_preferences_from_session()
+    plans, summary = generate_suggestions_and_summary_for_preferences(df, prefs)
     session["generated_plans"] = plans
+    # Summary powers the message like "Requested N, showing M..." on suggestions page.
+    session["suggestion_summary"] = summary
 
     if not plans:
         session["message"] = (
@@ -418,7 +454,8 @@ def wizard_generate():
 @app.route("/suggestions")
 def suggestions():
     plans = session.get("generated_plans", [])
-    return render_template("suggestions.html", plans=plans)
+    summary = session.get("suggestion_summary")
+    return render_template("suggestions.html", plans=plans, summary=summary)
 
 
 @app.route("/exit")
