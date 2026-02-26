@@ -4,10 +4,11 @@ Team Name: Lime Team
 Group Members (Andrew IDs):
 - Disheng Lu (`dishengl`)
 - Katerina Hrisopoulos (`khrisopo`)
-- (Name) (`andrewid`)
+- Kimberly Norris (`knorris2`)
 
 ## Product Vision
 Help users quickly find relevant Pittsburgh events based on budget, date, and time-of-day preferences.
+A demo version of the app can be found at https://event-finder-g7hz.onrender.com/ 
 
 ## Overview
 This project scrapes event listings, cleans them into a local CSV, and generates ranked event suggestions through:
@@ -111,6 +112,7 @@ Extra columns are allowed.
 ├── requirements.txt
 ├── runtime.txt
 ├── templates/
+    └── index.html
 ├── static/
 └── data/
     └── pittsburgh_events.csv
